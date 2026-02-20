@@ -12,7 +12,6 @@ CACHE_TTL = 7200  # 2 hours
 OVERPASS_SERVERS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
 
 
