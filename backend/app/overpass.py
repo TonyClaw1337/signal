@@ -1,70 +1,99 @@
 import httpx
-import json
+import asyncio
 import time
-from typing import List, Dict, Any
+import math
+from typing import List, Dict, Any, Tuple
 from .noise import get_track_stats_by_type
 
-# Simple in-memory cache: {grid_key: (timestamp, tracks)}
-_cache: Dict[str, tuple] = {}
-CACHE_TTL = 3600  # 1 hour
+# In-memory cache: {grid_key: (timestamp, tracks)}
+_cache: Dict[str, Tuple[float, List[Dict]]] = {}
+CACHE_TTL = 7200  # 2 hours
+
+OVERPASS_SERVERS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+]
+
 
 def _grid_key(lat: float, lng: float, radius: int) -> str:
-    """Round to ~200m grid for caching"""
-    return f"{round(lat, 3)}:{round(lng, 3)}:{radius}"
+    """Round to ~500m grid cells for caching."""
+    return f"{round(lat, 2)}:{round(lng, 2)}:{radius}"
+
+
+def _find_cached(lat: float, lng: float, radius: int) -> List[Dict] | None:
+    """Check if any nearby cache entry covers this request."""
+    now = time.time()
+    # Check exact grid
+    key = _grid_key(lat, lng, radius)
+    if key in _cache:
+        ts, tracks = _cache[key]
+        if now - ts < CACHE_TTL:
+            return tracks
+    # Check neighboring grid cells (wider coverage)
+    for dlat in [-0.01, 0, 0.01]:
+        for dlng in [-0.01, 0, 0.01]:
+            k = _grid_key(lat + dlat, lng + dlng, radius)
+            if k in _cache:
+                ts, tracks = _cache[k]
+                if now - ts < CACHE_TTL:
+                    return tracks
+    return None
 
 
 async def fetch_nearby_tracks(lat: float, lng: float, radius: int = 2000) -> Dict[str, Any]:
-    """Fetch railway tracks from Overpass API within radius of coordinates."""
+    """Fetch railway tracks from Overpass API with server failover."""
     query = f"""[out:json][timeout:30];
 (
   way["railway"="rail"](around:{radius},{lat},{lng});
   way["railway"="light_rail"](around:{radius},{lat},{lng});
-  way["railway"="subway"](around:{radius},{lat},{lng});
 );
 out body geom;"""
 
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
-                resp = await client.post(
-                    "https://overpass-api.de/api/interpreter",
-                    data={"data": query},
-                    headers={"User-Agent": "SIGNAL-App/1.0 (TonyClaw Platform)"}
-                )
-                if resp.status_code == 429:
-                    # Rate limited — wait and retry
-                    wait = 2 ** attempt
-                    print(f"Overpass rate limited, waiting {wait}s (attempt {attempt+1})")
-                    import asyncio
-                    await asyncio.sleep(wait)
-                    continue
-                    
-                if resp.status_code != 200:
-                    print(f"Overpass HTTP {resp.status_code}: {resp.text[:200]}")
-                    return {"elements": []}
-                
-                text = resp.text
-                if not text or not text.strip().startswith("{"):
-                    print(f"Overpass non-JSON response: {text[:200]}")
-                    if attempt < 2:
-                        import asyncio
-                        await asyncio.sleep(1)
+    for server in OVERPASS_SERVERS:
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(45.0, connect=10.0)
+                ) as client:
+                    resp = await client.post(
+                        server,
+                        data={"data": query},
+                        headers={"User-Agent": "SIGNAL-App/1.0"}
+                    )
+
+                    if resp.status_code == 429:
+                        print(f"Overpass 429 from {server}, waiting...")
+                        await asyncio.sleep(2 ** attempt)
                         continue
-                    return {"elements": []}
-                
-                return resp.json()
-                
-        except httpx.TimeoutException as e:
-            print(f"Overpass timeout (attempt {attempt+1}): {e}")
-            if attempt < 2:
-                import asyncio
-                await asyncio.sleep(1)
-        except Exception as e:
-            print(f"Overpass error (attempt {attempt+1}): {e}")
-            if attempt < 2:
-                import asyncio
-                await asyncio.sleep(1)
-    
+
+                    if resp.status_code == 504 or resp.status_code >= 500:
+                        print(f"Overpass {resp.status_code} from {server}")
+                        break  # Try next server
+
+                    if resp.status_code != 200:
+                        print(f"Overpass HTTP {resp.status_code} from {server}")
+                        break
+
+                    text = resp.text
+                    if not text.strip().startswith("{"):
+                        print(f"Overpass non-JSON from {server}: {text[:100]}")
+                        break
+
+                    data = resp.json()
+                    elements = data.get("elements", [])
+                    print(f"Overpass OK from {server}: {len(elements)} elements")
+                    return data
+
+            except httpx.TimeoutException:
+                print(f"Overpass timeout from {server} (attempt {attempt+1})")
+                if attempt == 0:
+                    await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Overpass error from {server}: {e}")
+                break
+
+    print("All Overpass servers failed")
     return {"elements": []}
 
 
@@ -76,13 +105,8 @@ def classify_track_type(tags: Dict[str, str]) -> str:
 
     if usage in ["industrial", "military"] or service in ["siding", "yard"]:
         return "freight"
-    if usage == "branch" or service == "branch":
+    if usage == "branch" or service == "branch" or railway in ["light_rail", "subway"]:
         return "branch"
-    if railway == "light_rail":
-        return "branch"
-    if railway == "subway":
-        return "branch"
-    # main by default
     return "main"
 
 
@@ -96,22 +120,29 @@ def process_track_data(overpass_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         tags = element.get("tags", {})
         geometry = element.get("geometry", [])
-        
+
         if not geometry or len(geometry) < 2:
             continue
 
         track_type = classify_track_type(tags)
         stats = get_track_stats_by_type(track_type)
-
         coordinates = [[node["lon"], node["lat"]] for node in geometry]
 
         name = tags.get("name", "")
         if not name:
             ref = tags.get("ref", "")
-            usage = tags.get("usage", track_type)
-            name = f"Strecke {ref}" if ref else f"Gleis ({usage})"
+            if ref:
+                name = f"Strecke {ref}"
+            elif track_type == "main":
+                name = "Hauptstrecke"
+            elif track_type == "branch":
+                name = "Nebenstrecke"
+            elif track_type == "freight":
+                name = "Güterstrecke"
+            else:
+                name = "Bahnstrecke"
 
-        track_data = {
+        tracks.append({
             "id": element["id"],
             "name": name,
             "segment_id": str(element["id"]),
@@ -131,33 +162,31 @@ def process_track_data(overpass_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "ref": tags.get("ref", ""),
                 **stats
             }
-        }
-
-        tracks.append(track_data)
+        })
 
     return tracks
 
 
 async def get_cached_or_fetch_tracks(lat: float, lng: float, radius: int = 2000) -> List[Dict[str, Any]]:
     """Get tracks from cache or fetch from Overpass API."""
-    key = _grid_key(lat, lng, radius)
-    
     # Check cache
-    if key in _cache:
-        ts, cached_tracks = _cache[key]
-        if time.time() - ts < CACHE_TTL:
-            return cached_tracks
+    cached = _find_cached(lat, lng, radius)
+    if cached is not None:
+        print(f"Cache hit for {lat:.3f},{lng:.3f} ({len(cached)} tracks)")
+        return cached
 
+    # Fetch fresh
     overpass_data = await fetch_nearby_tracks(lat, lng, radius)
     tracks = process_track_data(overpass_data)
-    
-    # Cache result
+
+    # Cache
+    key = _grid_key(lat, lng, radius)
     _cache[key] = (time.time(), tracks)
-    
-    # Prune old cache entries
+
+    # Prune stale entries
     now = time.time()
     stale = [k for k, (ts, _) in _cache.items() if now - ts > CACHE_TTL * 2]
     for k in stale:
         del _cache[k]
-    
+
     return tracks

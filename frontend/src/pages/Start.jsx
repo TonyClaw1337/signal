@@ -1,34 +1,37 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { MapPin, Navigation, Search } from 'lucide-react'
+import { MapPin, Navigation, Search, Train, ArrowRight } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 const Start = () => {
   const [address, setAddress] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const navigate = useNavigate()
 
-  const handleAddressSubmit = async (e) => {
+  const goToMap = (lat, lng) => {
+    navigate(`/map?lat=${lat}&lng=${lng}`)
+  }
+
+  const handleSubmit = async (e) => {
     e.preventDefault()
     if (!address.trim()) return
-
+    setError('')
     setLoading(true)
     try {
-      const response = await fetch('/api/location', {
+      const res = await fetch('/api/location', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address: address.trim() })
       })
-
-      if (response.ok) {
-        const location = await response.json()
-        navigate(`/map?lat=${location.lat}&lng=${location.lng}`)
+      if (res.ok) {
+        const loc = await res.json()
+        goToMap(loc.lat, loc.lng)
       } else {
-        alert('Adresse nicht gefunden. Bitte versuchen Sie es erneut.')
+        setError('Adresse nicht gefunden')
       }
-    } catch (error) {
-      console.error('Geocoding error:', error)
-      alert('Fehler beim Geocodieren der Adresse.')
+    } catch {
+      setError('Verbindungsfehler')
     } finally {
       setLoading(false)
     }
@@ -36,174 +39,137 @@ const Start = () => {
 
   const handleGPS = () => {
     if (!navigator.geolocation) {
-      alert('GPS wird von diesem Browser nicht unterstützt.')
+      setError('GPS nicht unterstützt')
       return
     }
-
     setLoading(true)
+    setError('')
     navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords
-        navigate(`/map?lat=${latitude}&lng=${longitude}`)
-      },
-      (error) => {
-        console.error('GPS error:', error)
-        alert('GPS-Standort konnte nicht ermittelt werden.')
-        setLoading(false)
-      }
+      (pos) => goToMap(pos.coords.latitude, pos.coords.longitude),
+      () => { setError('GPS-Zugriff verweigert'); setLoading(false) },
+      { timeout: 10000 }
     )
   }
 
-  const handleMapPicker = () => {
-    // Default to Düsseldorf
-    navigate('/map?lat=51.2271&lng=6.7735')
-  }
+  // Quick-access cities
+  const presets = [
+    { name: 'Düsseldorf', lat: 51.2271, lng: 6.7735 },
+    { name: 'Köln', lat: 50.9375, lng: 6.9603 },
+    { name: 'Berlin', lat: 52.5200, lng: 13.4050 },
+    { name: 'München', lat: 48.1351, lng: 11.5820 },
+  ]
 
   return (
     <div className="start-page">
-      <motion.div 
+      <motion.div
+        className="start-content"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="start-content"
       >
-        <div className="text-center mb-8">
-          <motion.h1 
-            className="heading-xl"
-            style={{ color: '#ffffff', marginBottom: '1rem' }}
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
+        {/* Logo */}
+        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+          <motion.div
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
             transition={{ delay: 0.1 }}
           >
+            <Train size={48} style={{ color: 'var(--amber)', marginBottom: '0.75rem' }} />
+          </motion.div>
+          <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '2.5rem', fontWeight: 800, letterSpacing: '-0.02em' }}>
             <span style={{ color: 'var(--amber)' }}>SIGNAL</span>
-          </motion.h1>
-          <motion.p 
-            className="text-lg"
-            style={{ color: '#d1d5db' }}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2 }}
-          >
-            Zug-Frequenz & Lärm-Analyse
-          </motion.p>
-          <motion.p 
-            className="text-sm mt-2"
-            style={{ color: '#9ca3af' }}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3 }}
-          >
-            Finden Sie Bahnstrecken in Ihrer Nähe und analysieren Sie Zugfrequenzen und Lärmbelastung
-          </motion.p>
+          </h1>
+          <p style={{ color: '#999', fontSize: '0.95rem', marginTop: '0.5rem' }}>
+            Zugfrequenz & Lärmanalyse
+          </p>
         </div>
 
-        <div className="space-y-4">
-          {/* Address Input */}
-          <motion.form 
-            onSubmit={handleAddressSubmit}
-            className="card-glass"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.4 }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-              <Search size={20} style={{ color: 'var(--amber)' }} />
-              <h3 className="heading-md">Adresse eingeben</h3>
-            </div>
-            <div className="space-y-3">
+        {/* Search */}
+        <motion.form
+          onSubmit={handleSubmit}
+          className="card-glass"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+        >
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <Search size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#666' }} />
               <input
                 type="text"
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
-                placeholder="z.B. Hauptbahnhof München"
+                placeholder="Adresse eingeben..."
                 className="input"
+                style={{ paddingLeft: '2.25rem' }}
                 disabled={loading}
               />
-              <button 
-                type="submit" 
-                className="btn btn-primary w-full"
-                disabled={loading || !address.trim()}
-              >
-                {loading ? 'Suche...' : 'Suchen'}
-              </button>
             </div>
-          </motion.form>
+            <button type="submit" className="btn btn-primary" disabled={loading || !address.trim()}>
+              <ArrowRight size={18} />
+            </button>
+          </div>
+          {error && (
+            <p style={{ color: '#ef4444', fontSize: '0.8rem', marginTop: '0.5rem' }}>{error}</p>
+          )}
+        </motion.form>
 
-          {/* GPS Location */}
-          <motion.button
-            onClick={handleGPS}
-            className="card-glass w-full"
-            style={{ 
-              textAlign: 'left', 
-              border: 'none', 
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-              backgroundColor: 'var(--bg-glass)'
-            }}
-            disabled={loading}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.5 }}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onMouseEnter={(e) => {
-              e.target.style.backgroundColor = 'rgba(40, 40, 40, 0.95)'
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.backgroundColor = 'var(--bg-glass)'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <Navigation size={20} style={{ color: 'var(--amber)' }} />
-              <div>
-                <h3 className="heading-md">Meinen Standort verwenden</h3>
-                <p className="text-sm" style={{ color: '#9ca3af' }}>GPS-Position nutzen</p>
-              </div>
-            </div>
-          </motion.button>
+        {/* GPS */}
+        <motion.button
+          onClick={handleGPS}
+          disabled={loading}
+          className="card-glass"
+          style={{
+            width: '100%', display: 'flex', alignItems: 'center', gap: '0.75rem',
+            cursor: 'pointer', border: '1px solid var(--border)', marginTop: '0.75rem',
+            textAlign: 'left', padding: '1rem 1.25rem',
+          }}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          <Navigation size={20} style={{ color: 'var(--amber)', flexShrink: 0 }} />
+          <div>
+            <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Meinen Standort verwenden</div>
+            <div style={{ color: '#777', fontSize: '0.75rem' }}>GPS-Position</div>
+          </div>
+        </motion.button>
 
-          {/* Map Picker */}
-          <motion.button
-            onClick={handleMapPicker}
-            className="card-glass w-full"
-            style={{ 
-              textAlign: 'left', 
-              border: 'none', 
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-              backgroundColor: 'var(--bg-glass)'
-            }}
-            disabled={loading}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.6 }}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onMouseEnter={(e) => {
-              e.target.style.backgroundColor = 'rgba(40, 40, 40, 0.95)'
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.backgroundColor = 'var(--bg-glass)'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-              <MapPin size={20} style={{ color: 'var(--amber)' }} />
-              <div>
-                <h3 className="heading-md">Auf Karte wählen</h3>
-                <p className="text-sm" style={{ color: '#9ca3af' }}>Position manuell auswählen</p>
-              </div>
-            </div>
-          </motion.button>
-        </div>
-
-        <motion.footer 
-          className="text-center text-xs mt-8"
-          style={{ color: '#6b7280' }}
+        {/* Presets */}
+        <motion.div
+          style={{ marginTop: '1.5rem' }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ delay: 0.8 }}
+          transition={{ delay: 0.4 }}
         >
-          Powered by OpenStreetMap & Tony Claw Platform
-        </motion.footer>
+          <p style={{ color: '#555', fontSize: '0.75rem', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Schnellzugriff
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+            {presets.map((city) => (
+              <button
+                key={city.name}
+                onClick={() => goToMap(city.lat, city.lng)}
+                style={{
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  borderRadius: 8, padding: '0.6rem 0.75rem', cursor: 'pointer',
+                  color: '#ccc', fontSize: '0.85rem', fontFamily: 'var(--font-body)',
+                  display: 'flex', alignItems: 'center', gap: '0.5rem',
+                  transition: 'border-color 0.2s',
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--amber)'}
+                onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border)'}
+              >
+                <MapPin size={14} style={{ color: 'var(--amber)' }} />
+                {city.name}
+              </button>
+            ))}
+          </div>
+        </motion.div>
+
+        <p style={{ textAlign: 'center', color: '#444', fontSize: '0.65rem', marginTop: '2rem' }}>
+          Tony Claw Platform · OpenStreetMap
+        </p>
       </motion.div>
     </div>
   )
