@@ -55,8 +55,8 @@ const Start = () => {
   }
 
   const handleMapPicker = () => {
-    // Default to Berlin center for map picker
-    navigate('/map?lat=52.520008&lng=13.404954&picker=true')
+    // Default to Düsseldorf
+    navigate('/map?lat=51.2271&lng=6.7735')
   }
 
   return (

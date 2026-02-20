@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { MapContainer, TileLayer, Marker, Popup, Polyline, GeoJSON, useMapEvents, useMap } from 'react-leaflet'
-import { ArrowLeft, Loader2, Train, MapPin } from 'lucide-react'
+import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet'
+import { ArrowLeft, Loader2, Train, MapPin, ArrowRight } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import TrackPopup from '../components/TrackPopup'
 import L from 'leaflet'
 
-// Fix default marker icons in Vite
+// Fix default marker icons
 import markerIcon from 'leaflet/dist/images/marker-icon.png'
 import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 import markerRetina from 'leaflet/dist/images/marker-icon-2x.png'
@@ -18,210 +18,156 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 })
 
-const userMarkerIcon = L.divIcon({
-  className: 'user-location-marker',
-  html: `
-    <div style="
-      width: 24px;
-      height: 24px;
-      background: var(--amber, #e5a00d);
-      border: 3px solid #fff;
-      border-radius: 50%;
-      box-shadow: 0 2px 12px rgba(229,160,13,0.5);
-      cursor: grab;
-    "></div>
-  `,
-  iconSize: [24, 24],
-  iconAnchor: [12, 12]
+// Custom amber marker
+const amberIcon = L.divIcon({
+  className: '',
+  html: `<div style="
+    width: 22px; height: 22px;
+    background: #e5a00d;
+    border: 3px solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 0 12px rgba(229,160,13,0.6), 0 2px 8px rgba(0,0,0,0.4);
+    cursor: grab;
+  "></div>`,
+  iconSize: [22, 22],
+  iconAnchor: [11, 11],
 })
 
-// Debounce hook
-function useDebounce(callback, delay) {
-  const timerRef = useRef(null)
-  const callbackRef = useRef(callback)
-  callbackRef.current = callback
-
-  return useCallback((...args) => {
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => callbackRef.current(...args), delay)
-  }, [delay])
-}
-
-// Component to handle map events and auto-fetch on move
-const MapController = ({ onBoundsChange }) => {
-  const map = useMap()
-
-  useEffect(() => {
-    const handler = () => {
-      const bounds = map.getBounds()
-      const center = map.getCenter()
-      onBoundsChange({ bounds, center, zoom: map.getZoom() })
-    }
-    map.on('moveend', handler)
-    map.on('zoomend', handler)
-    // Initial
-    handler()
-    return () => {
-      map.off('moveend', handler)
-      map.off('zoomend', handler)
-    }
-  }, [map, onBoundsChange])
-
-  return null
-}
-
-// Click handler for placing marker
-const MapClickHandler = ({ onMapClick }) => {
+// Click on map to move marker
+function ClickToMove({ onMove }) {
   useMapEvents({
-    click: (e) => {
-      onMapClick(e.latlng)
-    }
+    click(e) {
+      onMove(e.latlng.lat, e.latlng.lng)
+    },
   })
   return null
 }
 
-const MapView = () => {
+// Fly map to location
+function FlyTo({ lat, lng, zoom }) {
+  const map = useMap()
+  const prevRef = useRef(null)
+  useEffect(() => {
+    const key = `${lat.toFixed(4)}_${lng.toFixed(4)}`
+    if (prevRef.current !== key) {
+      prevRef.current = key
+      // Don't fly on initial render — only on subsequent moves
+    }
+  }, [lat, lng, map, zoom])
+  return null
+}
+
+function MapView() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
-  
-  const lat = parseFloat(searchParams.get('lat')) || 51.1875
-  const lng = parseFloat(searchParams.get('lng')) || 6.7922
-  
+
+  // Default: Düsseldorf
+  const initLat = parseFloat(searchParams.get('lat')) || 51.2271
+  const initLng = parseFloat(searchParams.get('lng')) || 6.7735
+
+  const [pos, setPos] = useState({ lat: initLat, lng: initLng })
   const [tracks, setTracks] = useState([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [selectedTrack, setSelectedTrack] = useState(null)
-  const [userLocation, setUserLocation] = useState({ lat, lng })
-  const [legendVisible, setLegendVisible] = useState(true)
+  const [legendOpen, setLegendOpen] = useState(true)
+
+  // Debounce timer
+  const timerRef = useRef(null)
   const fetchIdRef = useRef(0)
 
-  const fetchTracks = useCallback(async (centerLat, centerLng, radius) => {
+  // Fetch tracks around a position
+  const fetchTracks = useCallback(async (lat, lng) => {
     const id = ++fetchIdRef.current
     setLoading(true)
     try {
-      const response = await fetch(`/api/tracks?lat=${centerLat}&lng=${centerLng}&radius=${radius}`)
-      if (response.ok && id === fetchIdRef.current) {
-        const data = await response.json()
-        setTracks(data)
+      const res = await fetch(`/api/tracks?lat=${lat}&lng=${lng}&radius=2000`)
+      if (res.ok && id === fetchIdRef.current) {
+        setTracks(await res.json())
       }
     } catch (err) {
-      console.error('Error fetching tracks:', err)
+      console.error('Track fetch error:', err)
     } finally {
       if (id === fetchIdRef.current) setLoading(false)
     }
   }, [])
 
-  // Debounced fetch around marker position
-  const debouncedFetch = useDebounce((lat, lng) => {
-    fetchTracks(lat, lng, 3000)
-  }, 600)
+  // Debounced move handler
+  const moveMarker = useCallback((lat, lng) => {
+    setPos({ lat, lng })
+    window.history.replaceState({}, '', `/map?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}`)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => fetchTracks(lat, lng), 500)
+  }, [fetchTracks])
 
-  // Initial fetch
+  // Initial load
   useEffect(() => {
-    fetchTracks(lat, lng, 3000)
+    fetchTracks(initLat, initLng)
   }, [])
 
-  const handleMapClick = useCallback((latlng) => {
-    setUserLocation({ lat: latlng.lat, lng: latlng.lng })
-    window.history.replaceState({}, '', `/map?lat=${latlng.lat.toFixed(6)}&lng=${latlng.lng.toFixed(6)}`)
-    debouncedFetch(latlng.lat, latlng.lng)
-  }, [debouncedFetch])
+  // On marker drag end
+  const onDragEnd = useCallback((e) => {
+    const { lat, lng } = e.target.getLatLng()
+    moveMarker(lat, lng)
+  }, [moveMarker])
 
-  const handleMarkerDragEnd = useCallback((e) => {
-    const pos = e.target.getLatLng()
-    setUserLocation({ lat: pos.lat, lng: pos.lng })
-    window.history.replaceState({}, '', `/map?lat=${pos.lat.toFixed(6)}&lng=${pos.lng.toFixed(6)}`)
-    debouncedFetch(pos.lat, pos.lng)
-  }, [debouncedFetch])
-
-  const handleTrackClick = (track) => {
-    setSelectedTrack(track)
-  }
-
-  const getTrackColor = (trackType) => {
-    switch (trackType) {
-      case 'main': return '#3b82f6'
-      case 'branch': return '#71717a'
-      case 'freight': return '#ef4444'
-      default: return '#3b82f6'
+  // Distance helper
+  const distanceTo = (track) => {
+    const coords = track.geojson_geometry?.coordinates
+    if (!coords?.length) return null
+    let min = Infinity
+    for (const [lon, lat] of coords) {
+      const R = 6371000
+      const dLat = (lat - pos.lat) * Math.PI / 180
+      const dLng = (lon - pos.lng) * Math.PI / 180
+      const a = Math.sin(dLat/2)**2 + Math.cos(pos.lat*Math.PI/180)*Math.cos(lat*Math.PI/180)*Math.sin(dLng/2)**2
+      const d = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+      if (d < min) min = d
     }
+    return min
   }
 
-  const getTrackWeight = (trackType) => {
-    switch (trackType) {
-      case 'main': return 5
-      case 'branch': return 3
-      case 'freight': return 4
-      default: return 4
-    }
-  }
-
-  const calculateDistance = (lat1, lng1, lat2, lng2) => {
-    const R = 6371000
-    const dLat = (lat2 - lat1) * Math.PI / 180
-    const dLng = (lng2 - lng1) * Math.PI / 180
-    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
-  }
-
-  const getDistanceToTrack = (track) => {
-    if (!track.geojson_geometry?.coordinates?.length) return null
-    let minDist = Infinity
-    for (const coord of track.geojson_geometry.coordinates) {
-      const d = calculateDistance(userLocation.lat, userLocation.lng, coord[1], coord[0])
-      if (d < minDist) minDist = d
-    }
-    return minDist
-  }
-
-  // Dummy bounds handler (we fetch around marker, not bounds)
-  const handleBoundsChange = useCallback(() => {}, [])
+  const trackColor = (t) => t === 'freight' ? '#ef4444' : t === 'branch' ? '#71717a' : '#3b82f6'
+  const trackWeight = (t) => t === 'main' ? 5 : t === 'freight' ? 4 : 3
 
   return (
     <div className="map-page">
-      {/* Floating header */}
-      <motion.div 
+      {/* Header */}
+      <motion.div
         className="map-header"
         initial={{ y: -50, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <button 
+          <button
             onClick={() => navigate('/')}
             className="btn btn-ghost"
-            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.75rem' }}
           >
             <ArrowLeft size={16} />
             Zurück
           </button>
-          
-          <h1 className="heading-md">
+
+          <h1 style={{ fontFamily: 'var(--font-heading)', fontSize: '1.1rem', fontWeight: 700 }}>
             <span style={{ color: 'var(--amber)' }}>SIGNAL</span> Karte
           </h1>
-          
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            {loading && <Loader2 className="animate-spin" size={16} />}
-            <span className="text-sm" style={{ color: '#a0a0a0' }}>
+            {loading && <Loader2 className="animate-spin" size={14} style={{ color: 'var(--amber)' }} />}
+            <span style={{ fontSize: '0.75rem', color: '#888', fontFamily: 'var(--font-mono)' }}>
               {tracks.length} Gleise
             </span>
           </div>
         </div>
-        
-        <motion.div 
-          className="text-sm"
-          style={{ color: '#666', marginTop: '0.25rem', textAlign: 'center' }}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.5 }}
-        >
-          <MapPin size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />
-          Marker verschieben oder auf Karte tippen
-        </motion.div>
+
+        <p style={{ textAlign: 'center', fontSize: '0.7rem', color: '#555', marginTop: '4px' }}>
+          Marker ziehen oder auf Karte tippen
+        </p>
       </motion.div>
 
-      {/* Fullscreen Map */}
+      {/* Map */}
       <div className="map-container">
         <MapContainer
-          center={[lat, lng]}
+          center={[initLat, initLng]}
           zoom={14}
           style={{ height: '100vh', width: '100%' }}
           zoomControl={true}
@@ -229,161 +175,112 @@ const MapView = () => {
         >
           <TileLayer
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            attribution='&copy; OpenStreetMap &copy; CARTO'
+            attribution="&copy; OSM &amp; CARTO"
           />
-          
-          <MapController onBoundsChange={handleBoundsChange} />
-          <MapClickHandler onMapClick={handleMapClick} />
-          
-          {/* Draggable user marker */}
-          <Marker 
-            position={[userLocation.lat, userLocation.lng]} 
-            icon={userMarkerIcon}
-            draggable={true}
-            eventHandlers={{
-              dragend: handleMarkerDragEnd
-            }}
-          >
-            <Popup>
-              <div style={{ textAlign: 'center', color: '#333' }}>
-                <strong>Standort</strong>
-                <br />
-                <small style={{ fontFamily: 'monospace' }}>
-                  {userLocation.lat.toFixed(6)}, {userLocation.lng.toFixed(6)}
-                </small>
-              </div>
-            </Popup>
-          </Marker>
 
-          {/* Railway tracks as colored polylines */}
+          <ClickToMove onMove={moveMarker} />
+          <FlyTo lat={pos.lat} lng={pos.lng} zoom={14} />
+
+          {/* Draggable amber marker */}
+          <Marker
+            position={[pos.lat, pos.lng]}
+            icon={amberIcon}
+            draggable={true}
+            eventHandlers={{ dragend: onDragEnd }}
+          />
+
+          {/* Track polylines */}
           {tracks.map((track) => {
-            if (!track.geojson_geometry?.coordinates?.length) return null
-            
-            const positions = track.geojson_geometry.coordinates.map(c => [c[1], c[0]])
-            const color = getTrackColor(track.track_type)
-            const weight = getTrackWeight(track.track_type)
-            const distance = getDistanceToTrack(track)
-            
+            const coords = track.geojson_geometry?.coordinates
+            if (!coords?.length) return null
+            const positions = coords.map(([lon, lat]) => [lat, lon])
+            const color = trackColor(track.track_type)
+            const weight = trackWeight(track.track_type)
+
             return (
               <React.Fragment key={track.id}>
-                {/* Glow outline */}
-                <Polyline
-                  positions={positions}
-                  color={color}
-                  weight={weight + 6}
-                  opacity={0.15}
-                />
-                {/* Main line */}
+                {/* Glow */}
+                <Polyline positions={positions} color={color} weight={weight + 6} opacity={0.12} />
+                {/* Line */}
                 <Polyline
                   positions={positions}
                   color={color}
                   weight={weight}
-                  opacity={0.9}
+                  opacity={0.85}
                   eventHandlers={{
-                    click: () => handleTrackClick({ ...track, distance })
+                    click: () => setSelectedTrack({ ...track, distance: distanceTo(track) })
                   }}
                 />
-                {/* Dashed center for freight */}
-                {track.track_type === 'freight' && (
-                  <Polyline
-                    positions={positions}
-                    color="#fff"
-                    weight={1}
-                    opacity={0.3}
-                    dashArray="4 8"
-                  />
-                )}
               </React.Fragment>
             )
           })}
         </MapContainer>
       </div>
 
-      {/* Floating legend */}
+      {/* Legend */}
       <AnimatePresence>
-        {legendVisible && (
-          <motion.div 
+        {legendOpen && (
+          <motion.div
             className="map-legend"
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
-            transition={{ delay: 0.3 }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-              <h4 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: '600', margin: 0, fontSize: '0.8rem' }}>
-                <Train size={14} style={{ color: 'var(--amber)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, fontSize: '0.75rem' }}>
+                <Train size={13} style={{ color: 'var(--amber)' }} />
                 Gleistypen
-              </h4>
-              <button
-                onClick={() => setLegendVisible(false)}
-                style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', padding: '2px 6px', fontSize: '0.9rem' }}
-              >
-                ×
-              </button>
+              </span>
+              <button onClick={() => setLegendOpen(false)} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '0.9rem', lineHeight: 1 }}>×</button>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem' }}>
-                <div style={{ width: '1.2rem', height: '3px', backgroundColor: '#3b82f6', borderRadius: '2px' }}></div>
-                <span>Hauptstrecke</span>
+            {[
+              ['#3b82f6', 'Hauptstrecke', 3],
+              ['#71717a', 'Nebenstrecke', 2],
+              ['#ef4444', 'Güterstrecke', 3],
+            ].map(([c, label, h]) => (
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.7rem', marginTop: '3px' }}>
+                <div style={{ width: '16px', height: `${h}px`, background: c, borderRadius: '2px' }} />
+                <span>{label}</span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem' }}>
-                <div style={{ width: '1.2rem', height: '2px', backgroundColor: '#71717a', borderRadius: '2px' }}></div>
-                <span>Nebenstrecke</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.7rem' }}>
-                <div style={{ width: '1.2rem', height: '3px', backgroundColor: '#ef4444', borderRadius: '2px' }}></div>
-                <span>Güterstrecke</span>
-              </div>
-            </div>
+            ))}
           </motion.div>
         )}
       </AnimatePresence>
 
-      {!legendVisible && (
+      {!legendOpen && (
         <motion.button
-          onClick={() => setLegendVisible(true)}
-          style={{
-            position: 'fixed',
-            bottom: '20px',
-            left: '12px',
-            zIndex: 1000,
-            padding: '0.5rem',
-            borderRadius: '50%',
-            background: 'rgba(17,17,20,0.9)',
-            border: '1px solid rgba(255,255,255,0.1)',
-            color: 'var(--amber)',
-            cursor: 'pointer'
-          }}
-          initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ opacity: 1, scale: 1 }}
+          onClick={() => setLegendOpen(true)}
+          style={{ position: 'fixed', bottom: 20, left: 12, zIndex: 1000, width: 36, height: 36, borderRadius: '50%', background: 'rgba(9,9,11,0.9)', border: '1px solid rgba(255,255,255,0.1)', color: 'var(--amber)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
         >
-          <Train size={16} />
+          <Train size={15} />
         </motion.button>
       )}
 
-      {/* Track popup */}
+      {/* Track detail popup */}
       <AnimatePresence>
         {selectedTrack && (
           <TrackPopup
             track={selectedTrack}
-            userLocation={userLocation}
+            userLocation={pos}
             onClose={() => setSelectedTrack(null)}
           />
         )}
       </AnimatePresence>
 
-      {/* Loading overlay */}
+      {/* Loading overlay — only on first load */}
       <AnimatePresence>
-        {loading && (
-          <motion.div 
+        {loading && tracks.length === 0 && (
+          <motion.div
             className="loading-overlay"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <div className="card-glass" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 1.25rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', background: 'rgba(17,17,20,0.95)', padding: '0.75rem 1.5rem', borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)' }}>
               <Loader2 className="animate-spin" size={18} style={{ color: 'var(--amber)' }} />
-              <span style={{ fontSize: '0.85rem' }}>Lade Bahndaten...</span>
+              <span style={{ fontSize: '0.85rem' }}>Lade Bahndaten…</span>
             </div>
           </motion.div>
         )}
